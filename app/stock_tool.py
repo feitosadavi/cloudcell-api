@@ -2,16 +2,87 @@
 LangChain Tools:
   - consultar_estoque        busca fuzzy no SQLite
   - listar_estoque_completo  lista tudo disponível
-  - transbordo               mock: transfere para atendimento humano
+  - transbordo               transfere para atendimento humano via Chatwoot
 """
+import asyncio
 import logging
+from collections import Counter
 
+import httpx
 from langchain_core.tools import tool
 
+from .config import settings
 from .database import buscar_produtos, formatar_produto, listar_produtos
 
 logger = logging.getLogger(__name__)
 
+# conversation_id injetado pelo gemini.py antes de cada chat()
+_current_conversation_id: str = ""
+
+
+def set_conversation_id(cid: str):
+    global _current_conversation_id
+    _current_conversation_id = cid
+
+
+# ── Helpers Chatwoot ──────────────────────────────────────────────────────────
+
+async def _executar_transbordo(conversation_id: str, motivo: str) -> str:
+    base     = settings.chatwoot_url.rstrip("/")
+    account  = settings.chatwoot_account_id
+    headers  = {"api_access_token": settings.chatwoot_api_token}
+
+    async with httpx.AsyncClient(timeout=15, verify=False) as client:
+
+        # 1. Busca agentes
+        r = await client.get(
+            f"{base}/api/v1/accounts/{account}/agents",
+            headers=headers,
+        )
+        r.raise_for_status()
+        agentes = r.json()
+        def _nao_e_admin(a: dict) -> bool:
+            nome = (a.get("name") or "").strip().lower()
+            email = (a.get("email") or "").strip().lower()
+            return nome != "admin" and not email.startswith("admin@")
+
+        disponiveis = [a for a in agentes if a.get("availability_status") in ("online", "busy") and _nao_e_admin(a)]
+        if not disponiveis:
+            disponiveis = [a for a in agentes if _nao_e_admin(a)]   # fallback: usa todos menos admin
+        if not disponiveis:
+            return "Atendente"
+
+        # 2. Conta conversas abertas por agente
+        r = await client.get(
+            f"{base}/api/v1/accounts/{account}/conversations"
+            f"?assignee_type=assigned&status=open&page=1",
+            headers=headers,
+        )
+        r.raise_for_status()
+        payload = r.json().get("data", {}).get("payload", [])
+        contador = Counter()
+        for conv in payload:
+            assignee = conv.get("meta", {}).get("assignee")
+            if assignee:
+                contador[assignee["id"]] += 1
+
+        # 3. Agente com menor carga
+        agente      = min(disponiveis, key=lambda a: contador.get(a["id"], 0))
+        agente_id   = agente["id"]
+        agente_nome = agente.get("name", "Atendente")
+        logger.info(f"🎯 Transbordo → {agente_nome} (id={agente_id}, conv={conversation_id})")
+
+        # 4. Atribui a conversa
+        await client.post(
+            f"{base}/api/v1/accounts/{account}/conversations/{conversation_id}/assignments",
+            headers={**headers, "Content-Type": "application/json"},
+            json={"assignee_id": agente_id},
+        )
+
+        return agente_nome
+
+
+# ── Tools ─────────────────────────────────────────────────────────────────────
 
 @tool
 def consultar_estoque(query: str) -> str:
@@ -24,8 +95,7 @@ def consultar_estoque(query: str) -> str:
     """
     logger.info(f"🔍 Consulta estoque: '{query}'")
     produtos = buscar_produtos(query, limite=50)
-
-    logger.info(f"🔍 Resultados encontrados: {len(produtos)} para query='{query}'")
+    logger.info(f"🔍 Resultados: {len(produtos)} para '{query}'")
 
     if not produtos:
         return "NENHUM_PRODUTO_ENCONTRADO"
@@ -77,19 +147,30 @@ def transbordo(motivo: str = "") -> str:
     - Situação fora do escopo normal do atendimento
     O parâmetro motivo é opcional mas ajuda o operador a entender o contexto.
     """
-    logger.info(f"🔀 TRANSBORDO acionado | motivo='{motivo}'")
+    logger.info(f"🔀 TRANSBORDO acionado | motivo='{motivo}' | conv={_current_conversation_id}")
 
-    # ── MOCK ──────────────────────────────────────────────────────────────────
-    # Em produção, aqui você chamaria a API do Chatwoot para:
-    #   - Atribuir a conversa a um agente/equipe
-    #   - Mudar o status da conversa
-    #   - Disparar um webhook interno
-    # Exemplo:
-    #   requests.post(f"{CHATWOOT_URL}/api/v1/accounts/{ACCOUNT_ID}/conversations/{conv_id}/assignments",
-    #                 json={"assignee_id": AGENT_ID}, headers={"api_access_token": TOKEN})
-    # ──────────────────────────────────────────────────────────────────────────
+    if not settings.chatwoot_api_token or not _current_conversation_id:
+        logger.warning("⚠️ Token ou conversation_id ausente — transbordo simulado")
+        return "TRANSBORDO_REALIZADO|agente=Atendente"
 
-    return "TRANSBORDO_REALIZADO"
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            future = asyncio.run_coroutine_threadsafe(
+                _executar_transbordo(_current_conversation_id, motivo), loop
+            )
+            agente_nome = future.result(timeout=20)
+        else:
+            agente_nome = loop.run_until_complete(
+                _executar_transbordo(_current_conversation_id, motivo)
+            )
+        logger.info(f"✅ Transbordo concluído → {agente_nome}")
+        return f"TRANSBORDO_REALIZADO|agente={agente_nome}"
+
+    except Exception as e:
+        logger.error(f"Erro no transbordo: {e}")
+        return "TRANSBORDO_REALIZADO|agente=Atendente"
 
 
-STOCK_TOOLS = [consultar_estoque, listar_estoque_completo]
+STOCK_TOOLS = [consultar_estoque, listar_estoque_completo, transbordo]

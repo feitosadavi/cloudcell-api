@@ -1,17 +1,17 @@
-import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 
-import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
+from .database import init_db
 from .history import HistoryManager
 from .gemini import GroqClient
 from .evolution import EvolutionClient
 from .chatwoot import ChatwootClient
+from .admin_routes import router as admin_router
+# from .appsheet_routes import router as appsheet_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,19 +27,25 @@ chatwoot_client = ChatwootClient()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 Starting up — loading conversation history from Chatwoot...")
+    # 1. Banco de dados
+    logger.info("🗄️  Inicializando banco de dados...")
+    init_db()
+
+    # 2. Histórico do Chatwoot
+    logger.info("🚀 Carregando histórico de conversas do Chatwoot...")
     try:
         await history_manager.load_from_chatwoot(chatwoot_client)
-        logger.info("✅ History loaded successfully.")
+        logger.info("✅ Histórico carregado.")
     except Exception as e:
-        logger.warning(f"⚠️  Could not load history on startup: {e}")
+        logger.warning(f"⚠️  Não foi possível carregar histórico: {e}")
+
     yield
-    logger.info("🛑 Shutting down.")
+    logger.info("🛑 Encerrando.")
 
 
 app = FastAPI(
     title="Chatwoot → Gemini → Evolution API",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -50,44 +56,53 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(admin_router)
+# app.include_router(appsheet_router)
+
 
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
 
-@app.post("/webhook/chatwoot/conversa")
-async def chatwoot_webhook(request: Request):
-    print(f"Received webhook: {await request.body()}")
-
 @app.post("/webhook/chatwoot")
 async def chatwoot_webhook(request: Request):
+    """
+    Recebe eventos do webhook do Chatwoot.
+    Payload real (flat, sem wrapper 'data'):
+      {
+        "event": "message_created",
+        "message_type": "incoming",
+        "content": "Olá",
+        "id": 221,
+        "conversation": { "id": 6, ... },
+        "sender": { "id": 11, "name": "Teste", ... }
+      }
+    """
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
+        raise HTTPException(status_code=400, detail="JSON inválido")
 
     event = body.get("event")
-    logger.info(f"📨 Webhook received: event={event}")
+    logger.info(f"📨 Webhook recebido: event={event}")
 
     if event not in ("message_created", "message_updated"):
-        return {"status": "ignored", "reason": f"event '{event}' not handled"}
+        return {"status": "ignored", "reason": f"event '{event}' não tratado"}
 
     message_type = body.get("message_type", "")
     if message_type != "incoming":
-        return {"status": "ignored", "reason": f"message_type '{message_type}' — skipped"}
+        return {"status": "ignored", "reason": f"message_type '{message_type}' ignorado"}
 
     if body.get("private", False):
-        return {"status": "ignored", "reason": "private message — skipped"}
+        return {"status": "ignored", "reason": "mensagem privada ignorada"}
 
     content = (body.get("content") or "").strip()
     if not content:
-        return {"status": "ignored", "reason": "empty content"}
+        return {"status": "ignored", "reason": "conteúdo vazio"}
 
     conversation_id = str(body.get("conversation", {}).get("id", ""))
     message_id = str(body.get("id", ""))
-
-    # sender info
     sender = body.get("sender", {})
 
 
@@ -110,7 +125,6 @@ async def chatwoot_webhook(request: Request):
     )
 
     history_manager.add_message(conversation_id, message_id, role="user", content=content)
-
     history = history_manager.get_history(conversation_id)
 
     try:
