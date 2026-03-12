@@ -24,6 +24,28 @@ class ChatwootClient:
             verify=False,  # self-signed cert support (sslip.io setups)
         )
 
+    async def send_message(self, conversation_id: int, content: str):
+        """
+        Sends message to a Chatwoot conversation
+        """
+
+        account_id = settings.chatwoot_account_id
+
+        path = f"/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
+
+        payload = {
+            "content": content
+        }
+
+        try:
+            r = await self._client.post(path, json=payload)
+            r.raise_for_status()
+            return r.json()
+
+        except Exception as e:
+            logger.error(f"❌ Chatwoot send message error: {e}")
+            return None
+
     async def fetch_conversations(self) -> list[dict]:
         """
         Fetches all pages of conversations and returns a flat list.

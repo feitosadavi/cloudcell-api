@@ -57,6 +57,16 @@ def init_db():
                 created_at    TEXT    DEFAULT (datetime('now')),
                 updated_at    TEXT    DEFAULT (datetime('now'))
             );
+                           
+            CREATE TABLE IF NOT EXISTS bot_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+                           
+            CREATE TABLE IF NOT EXISTS admin_phones (
+                phone TEXT PRIMARY KEY,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS produtos_fts USING fts5(
                 nome,
@@ -187,6 +197,28 @@ def desativar_produto(produto_id: int) -> dict | None:
             return None
         return dict(conn.execute("SELECT * FROM produtos WHERE id = ?", (produto_id,)).fetchone())
 
+
+# ── ADMINS ───────────────────────────────────────────────────────────────
+def listar_admins() -> list[str]:
+    with db() as conn:
+        rows = conn.execute("SELECT phone FROM admin_phones").fetchall()
+        return [r["phone"] for r in rows]
+
+
+def adicionar_admin(phone: str):
+    with db() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO admin_phones (phone) VALUES (?)",
+            (phone,)
+        )
+
+
+def remover_admin(phone: str):
+    with db() as conn:
+        conn.execute(
+            "DELETE FROM admin_phones WHERE phone = ?",
+            (phone,)
+        )
 
 # ── BUSCA FUZZY ──────────────────────────────────────────────────────────────
 

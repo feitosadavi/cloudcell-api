@@ -9,7 +9,8 @@ services:
       - .env
     volumes:
       - ./logs:/app/logs
-      - ./data:/app/data # persiste o SQLite entre restarts
+      - .:/app
+      - bot_data:/app/data # volume nomeado — Docker gerencia, sem problema de permissão
 
     healthcheck:
       test:
@@ -37,3 +38,5 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+volumes:
+  bot_data: # volume nomeado persistente — sobrevive a restarts e rebuilds
