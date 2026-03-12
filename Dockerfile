@@ -23,6 +23,8 @@ USER app
 
 EXPOSE 4000
 
+RUN python3 seed_estoque.py
+
 # Gunicorn + Uvicorn workers for production concurrency
 CMD ["uvicorn", "app.main:app", \
      "--host", "0.0.0.0", \

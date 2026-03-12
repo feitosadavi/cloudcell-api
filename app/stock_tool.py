@@ -111,11 +111,12 @@ def consultar_estoque(query: str) -> str:
 def listar_estoque_completo(filtro: str = "") -> str:
     """
     Lista todos os produtos disponíveis no estoque.
-    Use quando o cliente pedir para ver tudo disponível.
-    O parâmetro filtro é opcional: 'seminovo', 'novo', 'iphone', etc.
     """
     logger.info(f"📋 Listagem completa, filtro='{filtro}'")
-    produtos = listar_produtos(apenas_disponiveis=True)
+    
+    # CORREÇÃO: Pegamos apenas a lista de itens do dicionário retornado
+    resultado_paginado = listar_produtos(apenas_disponiveis=True, por_pagina=500)
+    produtos = resultado_paginado.get("items", [])
 
     if filtro:
         fl = filtro.lower()
@@ -124,6 +125,7 @@ def listar_estoque_completo(filtro: str = "") -> str:
             if fl in (p.get("tipo") or "").lower()
             or fl in (p.get("estado") or "").lower()
             or fl in (p.get("nome") or "").lower()
+            or fl in (p.get("cor") or "").lower()
         ]
 
     if not produtos:
@@ -131,8 +133,12 @@ def listar_estoque_completo(filtro: str = "") -> str:
 
     linhas = [f"*Estoque disponível — {len(produtos)} produto(s):*\n"]
     for p in produtos:
+        # Garanta que formatar_produto receba o dicionário correto
         linhas.append(formatar_produto(p))
         linhas.append("")
+    
+    print(linhas)
+
     return "\n".join(linhas)
 
 
